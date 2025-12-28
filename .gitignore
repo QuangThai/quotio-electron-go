@@ -1,0 +1,47 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# Frontend
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
+.DS_Store
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Build artifacts
+build/
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.AppImage
+
+# Docs
+docs/
+
+# Screenshots
+screenshots/

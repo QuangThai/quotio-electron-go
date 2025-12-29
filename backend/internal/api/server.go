@@ -106,6 +106,8 @@ func getAllowedOrigins(cfg *config.Config) []string {
 		fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
 		"http://localhost:5173",     // Common Vite dev server port
 		"http://127.0.0.1:5173",     // For testing with local dev server
+		"http://localhost:3000",     // Electron/React dev server port
+		"http://127.0.0.1:3000",     // For testing with local dev server on port 3000
 	}
 
 	// Allow custom origins via environment variable (for advanced/testing scenarios)

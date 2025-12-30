@@ -10,7 +10,7 @@
     "build:renderer": "vite build",
     "build:electron": "vite build --config vite.config.electron.js && vite build --config vite.config.preload.js",
     "preview": "vite preview",
-    "electron:dev": "npm run build:electron && concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:dev": "npm run build:electron && concurrently -k \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
     "electron:pack": "electron-builder",
     "postinstall": "electron-builder install-app-deps",
     "lint": "eslint src --ext .ts,.tsx",

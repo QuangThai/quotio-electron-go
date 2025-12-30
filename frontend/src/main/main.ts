@@ -31,6 +31,12 @@ function createWindow(): void {
     mainWindow.loadFile(path.join(__dirname, "../../dist/index.html"));
   }
 
+  // Ensure window is shown and focused, especially on Windows
+  mainWindow.show();
+  if (process.platform === "win32") {
+    mainWindow.focus();
+  }
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });

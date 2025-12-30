@@ -581,7 +581,7 @@ function Providers() {
                     <span className="text-lg group-hover:scale-110 transition-transform">
                       {getProviderIcon(tile.provider)}
                     </span>
-                    <span className="font-bold text-xs truncate">
+                    <span className="font-bold text-sm truncate">
                       {tile.label}
                     </span>
                   </div>

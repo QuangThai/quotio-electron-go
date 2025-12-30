@@ -85,7 +85,7 @@ function About() {
 
       <div className="flex flex-wrap gap-4 justify-center">
         <a
-          href="https://github.com/nguyenphutrong/quotio"
+          href="https://github.com/QuangThai/quotio-electron-go"
           target="_blank"
           rel="noreferrer"
         >

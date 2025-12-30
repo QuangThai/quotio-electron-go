@@ -11,40 +11,100 @@ import (
 )
 
 type Agent struct {
-	Name       string
-	ConfigPath string
-	Installed  bool
-	Configured bool   // True if configured with our proxy
+	Name             string
+	ConfigPath       string
+	ConfigPaths      []string // Multiple possible config paths
+	BinaryNames      []string // Multiple binary names to check
+	Installed        bool
+	Configured       bool // True if configured with our proxy
 	ConfigPathExists bool // True if config file exists
 }
 
+// Common binary paths to search (like quotio reference)
+var commonBinaryPaths = []string{
+	"/usr/local/bin",
+	"/opt/homebrew/bin",
+	"/usr/bin",
+	"~/.local/bin",
+	"~/.cargo/bin",
+	"~/.bun/bin",
+	"~/.deno/bin",
+	"~/.npm-global/bin",
+	"~/.volta/bin",
+	"~/.asdf/shims",
+	"~/.local/share/mise/shims",
+	"~/.opencode/bin",
+}
+
 var KnownAgents = []Agent{
-	{Name: "claude-code", ConfigPath: getClaudeCodeConfigPath()},
-	{Name: "opencode", ConfigPath: getOpenCodeConfigPath()},
-	{Name: "gemini-cli", ConfigPath: getGeminiCLIConfigPath()},
-	{Name: "droid", ConfigPath: getDroidConfigPath()},
-	{Name: "amp-cli", ConfigPath: getAmpCLIConfigPath()},
+	{
+		Name:        "claude-code",
+		ConfigPath:  getClaudeCodeConfigPath(),
+		ConfigPaths: getClaudeCodeConfigPaths(),
+		BinaryNames: []string{"claude"},
+	},
+	{
+		Name:        "codex",
+		ConfigPath:  getCodexConfigPath(),
+		ConfigPaths: getCodexConfigPaths(),
+		BinaryNames: []string{"codex"},
+	},
+	{
+		Name:        "gemini-cli",
+		ConfigPath:  getGeminiCLIConfigPath(),
+		ConfigPaths: []string{}, // Environment-based, no config file
+		BinaryNames: []string{"gemini"},
+	},
+	{
+		Name:        "amp-cli",
+		ConfigPath:  getAmpCLIConfigPath(),
+		ConfigPaths: getAmpCLIConfigPaths(),
+		BinaryNames: []string{"amp"},
+	},
+	{
+		Name:        "opencode",
+		ConfigPath:  getOpenCodeConfigPath(),
+		ConfigPaths: getOpenCodeConfigPaths(),
+		BinaryNames: []string{"opencode", "oc"},
+	},
+	{
+		Name:        "droid",
+		ConfigPath:  getDroidConfigPath(),
+		ConfigPaths: getDroidConfigPaths(),
+		BinaryNames: []string{"droid", "factory-droid", "fd"},
+	},
 }
 
 func DetectAgents() ([]Agent, error) {
 	var detected []Agent
 
 	for _, agent := range KnownAgents {
-		// Check if command exists
-		installed := checkAgentInstalled(agent.Name)
+		// Check if command exists using improved detection
+		installed := checkAgentInstalledImproved(agent.BinaryNames)
 
-		// Check if config file exists
-		configExists, _ := checkConfigExists(agent.ConfigPath)
+		// Check if config file exists (check all possible paths)
+		configExists := false
+		configPath := agent.ConfigPath
+		for _, path := range agent.ConfigPaths {
+			if exists, _ := checkConfigExists(path); exists {
+				configExists = true
+				configPath = path
+				break
+			}
+		}
+		if !configExists && agent.ConfigPath != "" {
+			configExists, _ = checkConfigExists(agent.ConfigPath)
+		}
 
 		// Check if already configured with our proxy
 		configured := false
 		if configExists {
-			configured = checkAgentConfigured(agent.ConfigPath)
+			configured = checkAgentConfigured(configPath)
 		}
 
 		detected = append(detected, Agent{
-			Name:            agent.Name,
-			ConfigPath:       agent.ConfigPath,
+			Name:             agent.Name,
+			ConfigPath:       configPath,
 			Installed:        installed,
 			Configured:       configured,
 			ConfigPathExists: configExists,
@@ -55,7 +115,11 @@ func DetectAgents() ([]Agent, error) {
 }
 
 func checkConfigExists(path string) (bool, error) {
-	_, err := os.Stat(path)
+	if path == "" {
+		return false, nil
+	}
+	expandedPath := expandPath(path)
+	_, err := os.Stat(expandedPath)
 	if err == nil {
 		return true, nil
 	}
@@ -66,68 +130,207 @@ func checkConfigExists(path string) (bool, error) {
 }
 
 func checkAgentConfigured(configPath string) bool {
-	data, err := os.ReadFile(configPath)
+	expandedPath := expandPath(configPath)
+	data, err := os.ReadFile(expandedPath)
 	if err != nil {
 		return false
 	}
 
-	var config map[string]interface{}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return false
+	content := string(data)
+
+	// Check for proxy configuration in content (works for JSON, TOML, etc.)
+	if strings.Contains(content, "localhost:") || 
+	   strings.Contains(content, "127.0.0.1:") ||
+	   strings.Contains(content, "cliproxyapi") {
+		return true
 	}
 
-	// Check if proxy_url is set and contains localhost (flexible port)
-	if proxyURL, ok := config["proxy_url"].(string); ok {
-		return strings.Contains(proxyURL, "localhost:") || strings.Contains(proxyURL, "127.0.0.1:")
+	// Also try JSON parsing for proxy_url field
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err == nil {
+		if proxyURL, ok := config["proxy_url"].(string); ok {
+			return strings.Contains(proxyURL, "localhost:") || strings.Contains(proxyURL, "127.0.0.1:")
+		}
 	}
 
 	return false
 }
 
+// checkAgentInstalledImproved checks multiple binary names and common paths
+func checkAgentInstalledImproved(binaryNames []string) bool {
+	home, _ := os.UserHomeDir()
+
+	for _, name := range binaryNames {
+		// 1. Try which/LookPath first (works if PATH is set correctly)
+		if _, err := exec.LookPath(name); err == nil {
+			return true
+		}
+
+		// 2. Check common binary paths
+		for _, basePath := range commonBinaryPaths {
+			expandedBase := strings.ReplaceAll(basePath, "~", home)
+			fullPath := filepath.Join(expandedBase, name)
+			if isExecutable(fullPath) {
+				return true
+			}
+		}
+
+		// 3. Check version manager paths (nvm, fnm)
+		for _, path := range getVersionManagerPaths(name, home) {
+			if isExecutable(path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isExecutable checks if a file exists and is executable
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	// Check if it's a file and has execute permission
+	return !info.IsDir() && info.Mode()&0111 != 0
+}
+
+// getVersionManagerPaths returns paths from version managers like nvm/fnm
+func getVersionManagerPaths(name, home string) []string {
+	var paths []string
+
+	// nvm: ~/.nvm/versions/node/v*/bin/
+	nvmBase := filepath.Join(home, ".nvm", "versions", "node")
+	if versions, err := os.ReadDir(nvmBase); err == nil {
+		for i := len(versions) - 1; i >= 0; i-- { // Prefer newer versions
+			paths = append(paths, filepath.Join(nvmBase, versions[i].Name(), "bin", name))
+		}
+	}
+
+	// fnm: ~/.fnm/node-versions/v*/installation/bin/
+	fnmBase := filepath.Join(home, ".fnm", "node-versions")
+	if versions, err := os.ReadDir(fnmBase); err == nil {
+		for i := len(versions) - 1; i >= 0; i-- {
+			paths = append(paths, filepath.Join(fnmBase, versions[i].Name(), "installation", "bin", name))
+		}
+	}
+
+	return paths
+}
+
+// expandPath expands ~ to home directory
+func expandPath(path string) string {
+	if strings.HasPrefix(path, "~") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, path[1:])
+	}
+	return path
+}
+
+// Legacy function for backward compatibility
 func checkAgentInstalled(name string) bool {
-	// Check if command exists in PATH
 	_, err := exec.LookPath(name)
 	return err == nil
 }
 
+// Config path functions - Updated based on quotio reference
+
 func getClaudeCodeConfigPath() string {
 	home, _ := os.UserHomeDir()
 	if runtime.GOOS == "windows" {
-		return filepath.Join(home, "AppData", "Roaming", "claude-code", "config.json")
+		return filepath.Join(home, "AppData", "Roaming", "claude", "settings.json")
 	}
-	return filepath.Join(home, ".config", "claude-code", "config.json")
+	return filepath.Join(home, ".claude", "settings.json")
+}
+
+func getClaudeCodeConfigPaths() []string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		return []string{filepath.Join(home, "AppData", "Roaming", "claude", "settings.json")}
+	}
+	return []string{filepath.Join(home, ".claude", "settings.json")}
+}
+
+func getCodexConfigPath() string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "AppData", "Roaming", "codex", "config.toml")
+	}
+	return filepath.Join(home, ".codex", "config.toml")
+}
+
+func getCodexConfigPaths() []string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		return []string{
+			filepath.Join(home, "AppData", "Roaming", "codex", "config.toml"),
+			filepath.Join(home, "AppData", "Roaming", "codex", "auth.json"),
+		}
+	}
+	return []string{
+		filepath.Join(home, ".codex", "config.toml"),
+		filepath.Join(home, ".codex", "auth.json"),
+	}
 }
 
 func getOpenCodeConfigPath() string {
 	home, _ := os.UserHomeDir()
 	if runtime.GOOS == "windows" {
-		return filepath.Join(home, "AppData", "Roaming", "opencode", "config.json")
+		return filepath.Join(home, "AppData", "Roaming", "opencode", "opencode.json")
 	}
-	return filepath.Join(home, ".config", "opencode", "config.json")
+	return filepath.Join(home, ".config", "opencode", "opencode.json")
+}
+
+func getOpenCodeConfigPaths() []string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		return []string{filepath.Join(home, "AppData", "Roaming", "opencode", "opencode.json")}
+	}
+	return []string{filepath.Join(home, ".config", "opencode", "opencode.json")}
 }
 
 func getGeminiCLIConfigPath() string {
-	home, _ := os.UserHomeDir()
-	if runtime.GOOS == "windows" {
-		return filepath.Join(home, "AppData", "Roaming", "gemini-cli", "config.json")
-	}
-	return filepath.Join(home, ".config", "gemini-cli", "config.json")
+	// Gemini CLI uses environment variables, not config files
+	// Return empty - configuration is done via environment
+	return ""
 }
 
 func getDroidConfigPath() string {
 	home, _ := os.UserHomeDir()
 	if runtime.GOOS == "windows" {
-		return filepath.Join(home, "AppData", "Roaming", "droid", "config.json")
+		return filepath.Join(home, "AppData", "Roaming", "factory", "config.json")
 	}
-	return filepath.Join(home, ".config", "droid", "config.json")
+	return filepath.Join(home, ".factory", "config.json")
+}
+
+func getDroidConfigPaths() []string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		return []string{filepath.Join(home, "AppData", "Roaming", "factory", "config.json")}
+	}
+	return []string{filepath.Join(home, ".factory", "config.json")}
 }
 
 func getAmpCLIConfigPath() string {
 	home, _ := os.UserHomeDir()
 	if runtime.GOOS == "windows" {
-		return filepath.Join(home, "AppData", "Roaming", "amp-cli", "config.json")
+		return filepath.Join(home, "AppData", "Roaming", "amp", "settings.json")
 	}
-	return filepath.Join(home, ".config", "amp-cli", "config.json")
+	return filepath.Join(home, ".config", "amp", "settings.json")
+}
+
+func getAmpCLIConfigPaths() []string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		return []string{
+			filepath.Join(home, "AppData", "Roaming", "amp", "settings.json"),
+			filepath.Join(home, "AppData", "Local", "amp", "secrets.json"),
+		}
+	}
+	return []string{
+		filepath.Join(home, ".config", "amp", "settings.json"),
+		filepath.Join(home, ".local", "share", "amp", "secrets.json"),
+	}
 }
 
 func ConfigureAgent(agentName, proxyURL string) error {
@@ -144,15 +347,27 @@ func ConfigureAgent(agentName, proxyURL string) error {
 		return fmt.Errorf("agent not found: %s", agentName)
 	}
 
+	// Special handling for gemini-cli (environment-based)
+	if agentName == "gemini-cli" {
+		// Gemini CLI doesn't use config files, return success
+		// User should set environment variables manually
+		return nil
+	}
+
+	configPath := expandPath(agent.ConfigPath)
+	if configPath == "" {
+		return fmt.Errorf("no config path for agent: %s", agentName)
+	}
+
 	// Create config directory if it doesn't exist
-	configDir := filepath.Dir(agent.ConfigPath)
+	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return err
 	}
 
 	// Read existing config if exists
 	var existingConfig map[string]interface{}
-	if data, err := os.ReadFile(agent.ConfigPath); err == nil {
+	if data, err := os.ReadFile(configPath); err == nil {
 		json.Unmarshal(data, &existingConfig)
 	} else if !os.IsNotExist(err) {
 		return err
@@ -171,12 +386,12 @@ func ConfigureAgent(agentName, proxyURL string) error {
 	}
 
 	// Create a backup of the existing config before writing
-	if err := createConfigBackup(agent.ConfigPath); err != nil {
+	if err := createConfigBackup(configPath); err != nil {
 		return fmt.Errorf("failed to create config backup: %w", err)
 	}
 
 	// Write the new config
-	if err := os.WriteFile(agent.ConfigPath, configData, 0644); err != nil {
+	if err := os.WriteFile(configPath, configData, 0644); err != nil {
 		return err
 	}
 
@@ -215,7 +430,11 @@ func createConfigBackup(configPath string) error {
 func GetAgentStatus(agentName string) (bool, error) {
 	for _, agent := range KnownAgents {
 		if agent.Name == agentName {
-			_, err := os.Stat(agent.ConfigPath)
+			configPath := expandPath(agent.ConfigPath)
+			if configPath == "" {
+				return false, nil
+			}
+			_, err := os.Stat(configPath)
 			return err == nil, nil
 		}
 	}
@@ -223,13 +442,24 @@ func GetAgentStatus(agentName string) (bool, error) {
 }
 
 func ValidateAgentConfig(configPath string) (bool, string) {
-	data, err := os.ReadFile(configPath)
+	if configPath == "" {
+		// Environment-based config (like gemini-cli) is always "valid"
+		return true, ""
+	}
+
+	expandedPath := expandPath(configPath)
+	data, err := os.ReadFile(expandedPath)
 	if err != nil {
 		return false, fmt.Sprintf("Cannot read config file: %v", err)
 	}
 
 	var config map[string]interface{}
 	if err := json.Unmarshal(data, &config); err != nil {
+		// Not JSON - might be TOML (like codex), check for proxy content
+		content := string(data)
+		if strings.Contains(content, "localhost") || strings.Contains(content, "127.0.0.1") {
+			return true, ""
+		}
 		return false, fmt.Sprintf("Invalid JSON in config file: %v", err)
 	}
 
@@ -240,4 +470,3 @@ func ValidateAgentConfig(configPath string) (bool, string) {
 
 	return true, ""
 }
-
